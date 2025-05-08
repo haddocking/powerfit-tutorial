@@ -1,0 +1,145 @@
+<!doctype html>
+<html>
+  <head>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
+  </head>
+
+  <body>
+    <p>
+      You can execute any Python code. Just enter something in the box below and
+      click the button.
+    </p>
+<textarea id="code" rows="26" style="width: 100%;">
+    
+# Running equivalent of `powerfit ribosome-KsgA.map 13 KsgA.pdb -a 20 -l`
+# Prepare input
+import sys
+from pyodide.http import pyfetch
+from pathlib import Path
+
+async def download_file(url, filename):
+    response = await pyfetch(url)
+    content = await response.bytes()
+    Path(filename).write_bytes(content)
+
+await download_file("http://localhost:8000/ribosome-KsgA.map", "ribosome-KsgA.map")
+await download_file("http://localhost:8000/KsgA.pdb", "KsgA.pdb")
+
+from powerfit_em import Volume
+target = Volume.fromfile("ribosome-KsgA.map")
+print(target.shape)
+
+#from powerfit_em.powerfit import main
+#sys.argv = [ "powerfit","ribosome-KsgA.map","13","KsgA.pdb","-a","20","-l"]
+#main()
+# main() does not work, because it tries to use multiprocessing which is not implemented in pyodide
+
+# TODO make single core method to simplify usage in pyodide, now it is copy of main() internals
+from powerfit_em import (
+    Volume, Structure, structure_to_shape_like, proportional_orientations,
+    quat_to_rotmat, determine_core_indices
+    )
+from powerfit_em.powerfitter import PowerFitter
+from powerfit_em.analyzer import Analyzer
+from powerfit_em.helpers import mkdir_p, write_fits_to_pdb, fisher_sigma
+from powerfit_em.volume import extend, nearest_multiple2357, trim, resample
+import numpy as np
+from os.path import join
+
+resolution = 13
+resampling_rate = 2
+target = "ribosome-KsgA.map"
+template = "KsgA.pdb"
+angle = 20
+laplace = True
+num = 5
+directory = '.'
+
+target = Volume.fromfile(target)
+factor = 2 * resampling_rate * target.voxelspacing / resolution
+target = resample(target, factor)
+trimming_cutoff = target.array.max() / 10
+target = trim(target, trimming_cutoff)
+extended_shape = [nearest_multiple2357(n) for n in target.shape]
+target = extend(target, extended_shape)
+structure = Structure.fromfile(template)
+structure.translate(target.origin - structure.coor.mean(axis=1))
+template = structure_to_shape_like(
+        target, structure.coor, resolution=resolution,
+        weights=structure.atomnumber, shape='vol'
+        )
+mask = structure_to_shape_like(
+        target, structure.coor, resolution=resolution, shape='mask'
+        )
+q, w, degree = proportional_orientations(angle)
+rotmat = quat_to_rotmat(q)
+
+class Counter:
+    def increment(self):
+      pass
+
+counter = Counter()
+
+PowerFitter._run_correlator_instance(target, template, mask, rotmat, laplace, counter=counter, jobid=1, queues=None, directory=directory)
+_lcc = np.load('_lcc_part_1.npy')
+_rot = np.load('_rot_part_1.npy')
+mv = structure_to_shape_like(
+    target, structure.coor, resolution=resolution, radii=structure.rvdw, shape='mask'
+).array.sum() * target.voxelspacing ** 3
+z_sigma = fisher_sigma(mv, resolution)
+analyzer = Analyzer(
+    _lcc, rotmat, _rot, voxelspacing=target.voxelspacing,
+    origin=target.origin, z_sigma=z_sigma
+)
+Volume(_lcc, target.voxelspacing, target.origin).tofile(join(directory, 'lcc.mrc'))
+analyzer.tofile(join(directory, 'solutions.out'))
+n = min(num, len(analyzer.solutions))
+write_fits_to_pdb(structure, analyzer.solutions[:n], basename=join(directory, 'fit'))
+
+# Read some of the output
+print(list(Path('.').iterdir()))
+
+print(Path('solutions.out').read_text())
+
+    </textarea>
+    <button onclick="evaluatePython()">Run</button>
+    <br />
+    <br />
+    <div>Output:</div>
+    <textarea id="output" style="width: 100%;" rows="20" disabled></textarea>
+
+    <script>
+      const output = document.getElementById("output");
+      const code = document.getElementById("code");
+
+      function addToOutput(s) {
+        output.value += ">>>" + code.value + "\n" + s + "\n";
+      }
+
+      output.value = "Initializing...\n";
+      // init Pyodide
+      async function main() {
+        let pyodide = await loadPyodide();
+        await pyodide.loadPackage("micropip") 
+        const micropip = pyodide.pyimport("micropip");
+        await micropip.install('http://localhost:8000/powerfit_em-3.0.0-cp312-cp312-pyodide_2024_0_wasm32.whl');
+        output.value += "Powerfit installed\nReady!\n";
+        return pyodide;
+      }
+      let pyodideReadyPromise = main();
+
+      async function evaluatePython() {
+        let pyodide = await pyodideReadyPromise;
+        try {
+          addToOutput("Running...");
+          console.time()
+          let output = await pyodide.runPythonAsync(code.value);
+          console.timeEnd();
+          addToOutput(output);
+        } catch (err) {
+          addToOutput(err);
+        }
+      }
+    </script>
+  </body>
+</html>

@@ -16,6 +16,26 @@ Compile the contact-chainID.cpp file as follows
 
     g++ contact-chainID.cpp -o contact-chainID
 
+Run in web browser
+==================
+
+In powerfit repo make a pyodide wheel with 
+
+```
+uvx cibuildwheel --platform pyodide
+cp ../powerfit/wheelhouse/powerfit_em-3.0.0-cp312-cp312-pyodide_2024_0_wasm32.whl .
+```
+
+Start a local server
+
+```
+python3 -m http.server 8000
+```
+
+Then open the http://localhost:8000/tutorial.html in your web browser.
+Wait for read and press the run button.
+See DevTools console for print output.
+
 
 Licence
 =======
